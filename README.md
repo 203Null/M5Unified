@@ -1,3 +1,7 @@
+> **Cardenza fork:** runtime ES8156 identification and audio/LED/power support.
+> See [CARDENZA.md](CARDENZA.md). App builds pin the tested source commit;
+> compilation does not establish physical compatibility.
+
 # M5Unified
 ### Arduino / ESP-IDF Library for M5Stack Series
 
