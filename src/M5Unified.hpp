@@ -332,6 +332,14 @@ namespace m5
     /// @return board type
     board_t getBoard(void) const { return _board; }
 
+    /// True only after validating ES8156 chip ID on GPIO2/1. getBoard() remains
+    /// board_M5Cardputer for compatibility with existing matrix-keyboard code.
+    bool isCardenza(void) const { return _cardenza; }
+    bool cardenzaCodecReady(void) const { return _cardenza_codec_ready; }
+    /// Raw-I2S applications must stop Speaker before taking ownership of I2S.
+    /// Non-Cardenza returns false without any GPIO or I2C side effects.
+    bool configureCardenzaAudio(unsigned frame_bits = 32, unsigned sample_bits = 16);
+
     /// To call this function in a loop function.
     virtual void update(void);
 
@@ -369,12 +377,22 @@ namespace m5
       } else {
         res = Display.init_without_reset(false);
       }
-      auto board = _check_boardtype(Display.getBoard());
+      auto display_board = Display.getBoard();
+      // Identify before ADV keyboard probing or Power/LED setup repurposes pins.
+      _cardenza = _detect_cardenza(display_board, cfg.fallback_board);
+      auto board = _cardenza ? board_t::board_M5Cardputer : _check_boardtype(display_board);
+      if (_cardenza) {
+        cfg.internal_imu = false;
+        cfg.external_imu = false;
+        cfg.internal_rtc = false;
+        cfg.output_power = false;
+      }
       // printf("auto detect board:%d\n",board);
       bool board_detected = (board != board_t::board_unknown);
       if (!board_detected) { board = cfg.fallback_board; }
       _board = board;
       _setup_pinmap(board);
+      if (_cardenza) _get_pin_table[pin_name_t::rgb_led] = -1;
 #if defined ( CONFIG_IDF_TARGET_ESP32S3 )
       // Restore only on boards positively identified as exposing GPIO46 to the application
       // (camera VSYNC / data, header pin); every other case (power hold, display bus pins
@@ -388,6 +406,8 @@ namespace m5
       case board_t::board_M5AtomS3RExt:
       case board_t::board_M5StampS3:
       case board_t::board_M5StampS3Bat:
+      case board_t::board_M5Cardputer:
+      case board_t::board_M5CardputerADV:
         gpio46_backup.restore();
         break;
       default:
@@ -395,6 +415,7 @@ namespace m5
       }
 #endif
       _setup_i2c(board);
+      if (_cardenza) _init_cardenza();
       _setup_led(board);
       if (res && getDisplayCount() == 0) {
         addDisplay(Display);
@@ -706,6 +727,11 @@ namespace m5
 
     std::uint8_t _primary_display_index = -1;
     bool _use_pmic_button = false;
+    bool _cardenza = false;
+    bool _cardenza_codec_ready = false;
+    bool _detect_cardenza(board_t display_board, board_t fallback_board);
+    void _init_cardenza(void);
+    static bool _speaker_enabled_cb_cardenza(void* args, bool enabled);
 
     void _begin(const config_t& cfg);
     void _begin_audio(config_t& cfg);

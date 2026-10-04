@@ -111,6 +111,8 @@ namespace m5
   bool Power_Class::begin(void)
   {
     _pmic = pmic_t::pmic_unknown;
+    // GPIO10 is a keyboard signal on Cardenza, not a battery ADC.
+    if (M5.isCardenza()) return false;
 
 #if !defined (M5UNIFIED_PC_BUILD)
 #if defined (CONFIG_IDF_TARGET_ESP32P4)
@@ -1393,6 +1395,7 @@ namespace m5
 
   void Power_Class::setLed(uint8_t brightness)
   {
+    if (M5.isCardenza()) return;
 #if defined (M5UNIFIED_PC_BUILD)
     (void)brightness;
 #elif defined (CONFIG_IDF_TARGET_ESP32C6)

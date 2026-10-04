@@ -8,6 +8,13 @@
 
 #include "M5Unified.hpp"
 #include "utility/m5unified_i2c_addr.hpp"
+#include "utility/CardenzaCodec.hpp"
+#if defined(CONFIG_IDF_TARGET_ESP32S3) && !defined(M5UNIFIED_PC_BUILD)
+#include <driver/gpio.h>
+#include <esp_rom_gpio.h>
+#include <soc/gpio_sig_map.h>
+#include <hal/gpio_ll.h>
+#endif
 #include "utility/PI4IOE5V6408_Class.hpp"
 #include "utility/M5IOE1_Class.hpp"
 
@@ -2126,6 +2133,67 @@ static constexpr const uint8_t _pin_table_mbus[][31] = {
     return board;
   }
 
+  bool M5Unified::_detect_cardenza(board_t display_board, board_t fallback_board)
+  {
+#if defined(CONFIG_IDF_TARGET_ESP32S3) && !defined(M5UNIFIED_PC_BUILD)
+    const auto candidate = display_board == board_t::board_unknown ? fallback_board : display_board;
+    if (candidate != board_t::board_M5Cardputer && candidate != board_t::board_M5CardputerADV)
+      return false;
+    if (!_probe_i2c_addr(2, 1, cardenza::codec_address)) return false;
+    // Reuse the software probe port; do not steal a hardware I2C peripheral.
+    m5gfx::gpio::pin_backup_t pins[] = { GPIO_NUM_1, GPIO_NUM_2 };
+    I2C_Class probe;
+    const bool started = probe.begin((i2c_port_t)-2, 2, 1);
+    const bool matched = started && cardenza::identify(probe);
+    probe.release();
+    for (auto& pin : pins) pin.restore();
+    return matched;
+#else
+    (void)display_board; (void)fallback_board;
+    return false;
+#endif
+  }
+
+  void M5Unified::_init_cardenza(void)
+  {
+#if defined(CONFIG_IDF_TARGET_ESP32S3) && !defined(M5UNIFIED_PC_BUILD)
+    // Current revision: GPIO21 is active-low keyboard LED enable.
+    gpio_hold_dis(GPIO_NUM_21);
+    esp_rom_gpio_pad_select_gpio(GPIO_NUM_21);
+    gpio_ll_set_level(&GPIO, GPIO_NUM_21, 1);
+    gpio_ll_od_disable(&GPIO, GPIO_NUM_21);
+    esp_rom_gpio_connect_out_signal(GPIO_NUM_21, SIG_GPIO_OUT_IDX, false, false);
+    gpio_ll_output_enable(&GPIO, GPIO_NUM_21);
+    gpio_hold_en(GPIO_NUM_21);
+    configureCardenzaAudio();
+    ESP_LOGI("M5Unified", "Cardenza ES8156 ID verified; codec=%s; LED off",
+             _cardenza_codec_ready ? "ready" : "failed");
+#endif
+  }
+
+  bool M5Unified::configureCardenzaAudio(unsigned frame_bits, unsigned sample_bits)
+  {
+    if (!_cardenza) return false;
+    if ((frame_bits != 32 && frame_bits != 64)
+        || (sample_bits != 16 && sample_bits != 24 && sample_bits != 32)
+        || 2 * sample_bits > frame_bits) return false;
+    _cardenza_codec_ready = Ex_I2C.begin() && cardenza::configure(Ex_I2C, frame_bits, sample_bits);
+    return _cardenza_codec_ready;
+  }
+
+  bool M5Unified::_speaker_enabled_cb_cardenza(void* args, bool enabled)
+  {
+    auto self = static_cast<M5Unified*>(args);
+    // PDM reuses GPIO43; restore the DAC format on every playback resume.
+    if (!enabled) return true;
+    // M5's mono PCM input is duplicated into stereo output. Keep two physical
+    // 16-bit slots even when an application changed speaker_cfg.stereo.
+    auto config = self->Speaker.config();
+    config.stereo = true;
+    self->Speaker.config(config);
+    return self->configureCardenzaAudio(32, 16);
+  }
+
   void M5Unified::_setup_i2c(board_t board)
   {
 #if defined (M5UNIFIED_PC_BUILD)
@@ -2251,6 +2319,7 @@ static constexpr const uint8_t _pin_table_mbus[][31] = {
   }
   void M5Unified::_setup_led(board_t board)
   {
+    if (_cardenza) return;
 #if !defined (M5UNIFIED_PC_BUILD)
     int led_count = 1;
     int byte_per_led = 3;
@@ -3098,7 +3167,10 @@ static constexpr const uint8_t _pin_table_mbus[][31] = {
           spk_cfg.pin_data_out = GPIO_NUM_42;
           spk_cfg.magnification = 16;
           spk_cfg.i2s_port = I2S_NUM_1;
-          if (_board == board_t::board_M5CardputerADV) {
+          if (_cardenza) {
+            spk_cfg.stereo = true;
+            spk_enable_cb = _speaker_enabled_cb_cardenza;
+          } else if (_board == board_t::board_M5CardputerADV) {
             spk_enable_cb = _speaker_enabled_cb_cardputer_adv;
           }
         }
